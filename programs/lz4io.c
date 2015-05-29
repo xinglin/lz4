@@ -52,6 +52,9 @@
 #include <time.h>      /* clock */
 #include <sys/types.h> /* stat64 */
 #include <sys/stat.h>  /* stat64 */
+#include <unistd.h>    /* open, write close */
+#include <sys/types.h> /* flags for open */
+#include <sys/mman.h>  /* mmap, munmap */
 #include "lz4io.h"
 #include "lz4.h"       /* still required for legacy format */
 #include "lz4hc.h"     /* still required for legacy format */
@@ -467,6 +470,7 @@ static int LZ4IO_compressFilename_extRess(cRess_t ress, const char* srcFileName,
     LZ4F_compressionContext_t ctx = ress.ctx;   /* just a pointer */
     LZ4F_preferences_t prefs;
 
+    DISPLAYLEVEL(0, "Info: srcFile=%s destFile=%s compressionLevel=%d\n", srcFileName, dstFileName, compressionLevel);
 
     /* Init */
     memset(&prefs, 0, sizeof(prefs));
