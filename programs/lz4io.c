@@ -462,6 +462,7 @@ static int LZ4IO_compressFilename_extRess(cRess_t ress, const char* srcFileName,
     unsigned long long compressedfilesize = 0;
     FILE* srcFile;
     FILE* dstFile;
+    int dstFiledesc = -1;
     void* const srcBuffer = ress.srcBuffer;
     void* const dstBuffer = ress.dstBuffer;
     const size_t dstBufferSize = ress.dstBufferSize;
@@ -477,6 +478,9 @@ static int LZ4IO_compressFilename_extRess(cRess_t ress, const char* srcFileName,
 
     /* File check */
     if (LZ4IO_getFiles(srcFileName, dstFileName, &srcFile, &dstFile)) return 1;
+
+    /* Close dstFile now, since we use dstFiledesc. */
+    fclose (dstFile);
 
     /* Set compression parameters */
     prefs.autoFlush = 1;
@@ -553,7 +557,7 @@ static int LZ4IO_compressFilename_extRess(cRess_t ress, const char* srcFileName,
 
     /* Release files */
     fclose (srcFile);
-    fclose (dstFile);
+    // fclose (dstFile);
 
     /* Final Status */
     DISPLAYLEVEL(2, "\r%79s\r", "");
