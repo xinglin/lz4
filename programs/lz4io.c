@@ -882,18 +882,18 @@ static unsigned long long LZ4IO_decompressLZ4F(dRess_t ress, FILE* srcFile, FILE
 static unsigned long long LZ4IO_passThrough(FILE* finput, FILE* foutput, unsigned char MNstore[MAGICNUMBER_SIZE])
 {
     void* buffer = malloc(64 KB);
-    size_t read = 1, sizeCheck;
+    size_t readBytes = 1, sizeCheck;
     unsigned long long total = MAGICNUMBER_SIZE;
     unsigned storedSkips = 0;
 
     sizeCheck = fwrite(MNstore, 1, MAGICNUMBER_SIZE, foutput);
     if (sizeCheck != MAGICNUMBER_SIZE) EXM_THROW(50, "Pass-through write error");
 
-    while (read)
+    while (readBytes)
     {
-        read = fread(buffer, 1, 64 KB, finput);
-        total += read;
-        storedSkips = LZ4IO_fwriteSparse(foutput, buffer, read, storedSkips);
+    	readBytes = fread(buffer, 1, 64 KB, finput);
+        total += readBytes;
+        storedSkips = LZ4IO_fwriteSparse(foutput, buffer, readBytes, storedSkips);
     }
 
     LZ4IO_fwriteSparseEnd(foutput, storedSkips);
