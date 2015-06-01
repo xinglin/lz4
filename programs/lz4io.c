@@ -46,15 +46,16 @@
 /*****************************
 *  Includes
 *****************************/
+#include <unistd.h>    /* write close */
+#include <sys/types.h> /* stat64 */
+#include <sys/mman.h>  /* mmap, munmap */
 #include <stdio.h>     /* fprintf, fopen, fread, stdin, stdout, fflush, getchar */
 #include <stdlib.h>    /* malloc, free */
 #include <string.h>    /* strcmp, strlen */
 #include <time.h>      /* clock */
-#include <sys/types.h> /* stat64 */
 #include <sys/stat.h>  /* stat64 */
-#include <unistd.h>    /* open, write close */
-#include <sys/types.h> /* flags for open */
-#include <sys/mman.h>  /* mmap, munmap */
+#include <fcntl.h>     /* open */
+#include <errno.h>     /* errno */
 #include "lz4io.h"
 #include "lz4.h"       /* still required for legacy format */
 #include "lz4hc.h"     /* still required for legacy format */
@@ -463,6 +464,8 @@ static int LZ4IO_compressFilename_extRess(cRess_t ress, const char* srcFileName,
     FILE* srcFile;
     FILE* dstFile;
     int dstFiledesc = -1;
+    char *dstFileBuffer;
+    unsigned long long dstFileBufferOffset=0;
     void* const srcBuffer = ress.srcBuffer;
     void* const dstBuffer = ress.dstBuffer;
     const size_t dstBufferSize = ress.dstBufferSize;
@@ -471,7 +474,7 @@ static int LZ4IO_compressFilename_extRess(cRess_t ress, const char* srcFileName,
     LZ4F_compressionContext_t ctx = ress.ctx;   /* just a pointer */
     LZ4F_preferences_t prefs;
 
-    DISPLAYLEVEL(0, "Info: srcFile=%s destFile=%s compressionLevel=%d\n", srcFileName, dstFileName, compressionLevel);
+   // DISPLAYLEVEL(0, "Info: srcFile=%s destFile=%s compressionLevel=%d\n", srcFileName, dstFileName, compressionLevel);
 
     /* Init */
     memset(&prefs, 0, sizeof(prefs));
@@ -482,18 +485,38 @@ static int LZ4IO_compressFilename_extRess(cRess_t ress, const char* srcFileName,
     /* Close dstFile now, since we use dstFiledesc. */
     fclose (dstFile);
 
+    /* Open File descriptor for output. */
+    dstFiledesc = open(dstFileName, O_RDWR|O_CREAT|O_TRUNC, 0644);
+    if (dstFiledesc == -1) {
+    	DISPLAYLEVEL(0, "Error : cannot output file with errno %d\n", errno);
+    	return 1;
+    }
+
     /* Set compression parameters */
     prefs.autoFlush = 1;
     prefs.compressionLevel = compressionLevel;
     prefs.frameInfo.blockMode = (LZ4F_blockMode_t)g_blockIndependence;
     prefs.frameInfo.blockSizeID = (LZ4F_blockSizeID_t)g_blockSizeId;
     prefs.frameInfo.contentChecksumFlag = (LZ4F_contentChecksum_t)g_streamChecksum;
+    unsigned long long fileSize = LZ4IO_GetFileSize(srcFileName);
     if (g_contentSizeFlag)
     {
-      unsigned long long fileSize = LZ4IO_GetFileSize(srcFileName);
       prefs.frameInfo.contentSize = fileSize;   /* == 0 if input == stdin */
       if (fileSize==0)
           DISPLAYLEVEL(3, "Warning : cannot determine uncompressed frame content size \n");
+    }
+
+    if ( (ftruncate(dstFiledesc, fileSize)) != 0) {
+      	perror("ftruncate to source file Size");
+       	return 1;
+    }
+
+    DISPLAYLEVEL(0, "ftruncate to size %llu\n", fileSize);
+
+    /* mmap output file. */
+    if ( (dstFileBuffer = mmap(0, fileSize, PROT_WRITE, MAP_SHARED, dstFiledesc, 0)) == MAP_FAILED) {
+    	perror("mmap error");
+    	return 1;
     }
 
     /* read first block */
@@ -511,8 +534,12 @@ static int LZ4IO_compressFilename_extRess(cRess_t ress, const char* srcFileName,
                       (unsigned)(filesize>>20), (double)compressedfilesize/(filesize+!filesize)*100);   /* avoid division by zero */
 
         /* Write Block */
-        sizeCheck = fwrite(dstBuffer, 1, cSize, dstFile);
-        if (sizeCheck!=cSize) EXM_THROW(35, "Write error : cannot write compressed block");
+        if (dstFileBufferOffset + cSize > fileSize) {
+        	DISPLAYLEVEL(0, "Error : overflow dstFileBuffer %llu > %llu\n", dstFileBufferOffset + cSize, fileSize);
+        	return 1;
+        }
+        memcpy(dstFileBuffer+dstFileBufferOffset, dstBuffer, cSize);
+        dstFileBufferOffset += cSize;
     }
 
     else
@@ -522,8 +549,10 @@ static int LZ4IO_compressFilename_extRess(cRess_t ress, const char* srcFileName,
         /* Write Archive Header */
         headerSize = LZ4F_compressBegin(ctx, dstBuffer, dstBufferSize, &prefs);
         if (LZ4F_isError(headerSize)) EXM_THROW(32, "File header generation failed : %s", LZ4F_getErrorName(headerSize));
-        sizeCheck = fwrite(dstBuffer, 1, headerSize, dstFile);
-        if (sizeCheck!=headerSize) EXM_THROW(33, "Write error : cannot write header");
+        // sizeCheck = fwrite(dstBuffer, 1, headerSize, dstFile);
+        // if (sizeCheck!=headerSize) EXM_THROW(33, "Write error : cannot write header");
+        memcpy(dstFileBuffer+dstFileBufferOffset, dstBuffer, headerSize);
+        dstFileBufferOffset += headerSize;
         compressedfilesize += headerSize;
 
         /* Main Loop */
@@ -538,8 +567,15 @@ static int LZ4IO_compressFilename_extRess(cRess_t ress, const char* srcFileName,
             DISPLAYUPDATE(2, "\rRead : %u MB   ==> %.2f%%   ", (unsigned)(filesize>>20), (double)compressedfilesize/filesize*100);
 
             /* Write Block */
-            sizeCheck = fwrite(dstBuffer, 1, outSize, dstFile);
-            if (sizeCheck!=outSize) EXM_THROW(35, "Write error : cannot write compressed block");
+            // sizeCheck = fwrite(dstBuffer, 1, outSize, dstFile);
+            // if (sizeCheck!=outSize) EXM_THROW(35, "Write error : cannot write compressed block");
+            if (dstFileBufferOffset + outSize > fileSize) {
+            	DISPLAYLEVEL(0, "Error : overflow dstFileBuffer %llu > %llu\n", dstFileBufferOffset + outSize, fileSize);
+            	return 1;
+            }
+            memcpy(dstFileBuffer+dstFileBufferOffset, dstBuffer, outSize);
+            dstFileBufferOffset += outSize;
+            // DISPLAYLEVEL(2, "dst file buffer offset %llu\n", dstFileBufferOffset);
 
             /* Read next block */
             readSize  = fread(srcBuffer, (size_t)1, (size_t)blockSize, srcFile);
@@ -550,14 +586,30 @@ static int LZ4IO_compressFilename_extRess(cRess_t ress, const char* srcFileName,
         headerSize = LZ4F_compressEnd(ctx, dstBuffer, dstBufferSize, NULL);
         if (LZ4F_isError(headerSize)) EXM_THROW(36, "End of file generation failed : %s", LZ4F_getErrorName(headerSize));
 
-        sizeCheck = fwrite(dstBuffer, 1, headerSize, dstFile);
-        if (sizeCheck!=headerSize) EXM_THROW(37, "Write error : cannot write end of stream");
+        //sizeCheck = fwrite(dstBuffer, 1, headerSize, dstFile);
+        //if (sizeCheck!=headerSize) EXM_THROW(37, "Write error : cannot write end of stream");
+        if (dstFileBufferOffset + headerSize > fileSize) {
+               	DISPLAYLEVEL(0, "Error : overflow dstFileBuffer %llu > %llu\n", dstFileBufferOffset + headerSize, fileSize);
+               	return 1;
+        }
+        memcpy(dstFileBuffer+dstFileBufferOffset, dstBuffer, headerSize);
+        dstFileBufferOffset += headerSize;
+        // DISPLAYLEVEL(2, "dst file buffer offset %llu\n", dstFileBufferOffset);
+
         compressedfilesize += headerSize;
     }
 
     /* Release files */
     fclose (srcFile);
-    // fclose (dstFile);
+
+    /* Deal with output file */
+    msync(dstFileBuffer, compressedfilesize, MS_SYNC);
+    munmap(dstFileBuffer, fileSize);
+    if ( (ftruncate(dstFiledesc, compressedfilesize)) != 0) {
+    	perror("ftruncate to compressed file size");
+       	return 1;
+    }
+    close(dstFiledesc);
 
     /* Final Status */
     DISPLAYLEVEL(2, "\r%79s\r", "");
